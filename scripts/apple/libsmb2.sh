@@ -42,6 +42,18 @@ make -j$(get_cpu_count) || return 1
 
 make install || return 1
 
+# ★ 설치된 smb2/libsmb2.h 는 uint8_t/size_t/time_t 를 쓰면서 어떤 헤더도 include 하지 않는다
+#   (HAVE_STDINT_H 같은 가드도 없음 — 3차 빌드에서 -D 를 줘도 실패한 이유).
+#   ffmpeg configure 의 검사는 `#include <smb2/libsmb2.h>` 를 맨 먼저 하므로 컴파일이 깨진다.
+#   헤더 가드 바로 뒤에 표준 헤더 3개를 끼워 넣어 자급자족하게 만든다 (awk = GNU/BSD sed 차이 없음).
+HDR="${LIB_INSTALL_PREFIX}/include/smb2/libsmb2.h"
+if ! grep -q '^#include <stdint.h>' "${HDR}"; then
+  awk '{print} /^#define _LIBSMB2_H_/ {print "#include <stdint.h>"; print "#include <stddef.h>"; print "#include <time.h>"}' \
+    "${HDR}" > "${HDR}.tmp" || return 1
+  mv "${HDR}.tmp" "${HDR}" || return 1
+fi
+grep -n '^#include' "${HDR}" 1>>"${BASEDIR}"/build.log 2>&1
+
 # MANUALLY COPY PKG-CONFIG FILES
 # libsmb2 는 lib/pkgconfig/libsmb2.pc 를 설치한다. ffmpeg configure 가 PKG_CONFIG_LIBDIR 에서 찾도록 복사.
 #
