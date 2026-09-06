@@ -18,6 +18,11 @@ if [[ ! -f "${BASEDIR}"/src/"${LIB_NAME}"/configure ]] || [[ ${RECONF_libsmb2} -
   autoreconf_library "${LIB_NAME}" 1>>"${BASEDIR}"/build.log 2>&1 || return 1
 fi
 
+# libsmb2 소스(alloc.c 등)가 GNU 확장 `typeof` 를 쓰는데, 이 빌드 환경의 clang 은 엄격한 ISO C 모드라
+# `typeof` 를 모른다(1차 빌드 실패 원인: "expected ';'… use of undeclared identifier '__mptr'").
+# 표준 철자 `__typeof__` 로 치환해 준다. 경고가 에러로 승격되는 것도 막는다.
+export CFLAGS="${CFLAGS} -Dtypeof=__typeof__ -Wno-error"
+
 # --without-libkrb5 : iOS 에 krb5 가 없다. libsmb2 내장 NTLMSSP 인증으로 충분(NAS 로그인).
 # --disable-examples: 예제 실행파일은 크로스 빌드에서 링크 실패 원인이 되니 뺀다.
 # --disable-werror  : 최신 clang 경고가 에러로 승격돼 빌드가 끊기는 것 방지.
