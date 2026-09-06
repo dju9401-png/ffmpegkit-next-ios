@@ -44,4 +44,13 @@ make install || return 1
 
 # MANUALLY COPY PKG-CONFIG FILES
 # libsmb2 는 lib/pkgconfig/libsmb2.pc 를 설치한다. ffmpeg configure 가 PKG_CONFIG_LIBDIR 에서 찾도록 복사.
-cp "${LIB_INSTALL_PREFIX}"/lib/pkgconfig/libsmb2.pc "${INSTALL_PKG_CONFIG_DIR}" || return 1
+#
+# ★ smb2/libsmb2.h 는 uint32_t/size_t 를 쓰면서 <stdint.h>/<time.h> 를 `#ifdef HAVE_STDINT_H` 뒤에
+#   숨겨 놓아, 헤더만 단독 include 하면 컴파일이 안 된다 (2차 빌드 실패: "unknown type name 'uint32_t'").
+#   .pc 의 Cflags 에 그 define 을 넣어 주면 ffmpeg configure 의 헤더 테스트와 libsmbclient.c 컴파일이
+#   모두 통과한다 — 원래 AWS 빌드의 가짜 libsmbclient.pc 가 쓰던 바로 그 트릭.
+PC_SRC="${LIB_INSTALL_PREFIX}/lib/pkgconfig/libsmb2.pc"
+sed 's|^Cflags:.*|& -DHAVE_STDINT_H -DHAVE_TIME_H|' "${PC_SRC}" > "${PC_SRC}.tmp" || return 1
+mv "${PC_SRC}.tmp" "${PC_SRC}" || return 1
+grep '^Cflags' "${PC_SRC}" 1>>"${BASEDIR}"/build.log 2>&1
+cp "${PC_SRC}" "${INSTALL_PKG_CONFIG_DIR}" || return 1
