@@ -3,14 +3,25 @@ name: Build FFmpegKitNext for iOS (arm64 device only)
 # 수동 실행(workflow_dispatch) 또는 main 푸시 때 GitHub 의 macOS 러너(무료)에서
 # FFmpegKitNext 를 Nix 로 빌드해 xcframework + Swift Package 를 산출한다.
 # 결과물은 Actions 탭 → 해당 실행 → Artifacts 에서 zip 으로 내려받는다.
+#
+# with_smb2=true (기본) 이면:
+#   · FFmpeg 소스를 포크(dju9401-png/FFmpeg, 태그 n9.0.1-smb2)에서 받는다 —
+#     libavformat/libsmbclient.c 를 libsmb2 구현으로 교체 + configure 가 pkg-config libsmb2 를 찾게 패치
+#   · libsmb2 v6.0.0 을 커스텀 라이브러리로 함께 빌드 (scripts/apple/libsmb2.sh)
+#   → 결과 ffmpeg 이 smb:// 경로를 직접 읽고 쓴다 (앱이 NAS 를 직접 다루는 데 필요)
 
 on:
   workflow_dispatch:
     inputs:
       ffmpeg_version:
-        description: "FFmpeg 태그 (기본 n9.0.1 — 윈도우와 동일 버전. 말썽이면 n8.1.1)"
+        description: "FFmpeg 태그. smb2 켜면 포크 태그(n9.0.1-smb2), 끄면 상류 태그(n9.0.1)"
         required: false
-        default: "n9.0.1"
+        default: "n9.0.1-smb2"
+      with_smb2:
+        description: "libsmb2 기반 smb:// 프로토콜 포함"
+        type: boolean
+        required: false
+        default: true
   push:
     branches: [main]
 
@@ -18,7 +29,11 @@ jobs:
   build:
     # FFmpegKitNext 의 xcode26 프로필은 Xcode 26 이상을 요구한다 → macos-26 러너
     runs-on: macos-26
-    timeout-minutes: 350          # GitHub 상한 360분. 전체 라이브러리 빌드가 1~3시간
+    timeout-minutes: 350          # GitHub 상한 360분
+
+    env:
+      WITH_SMB2: ${{ github.event_name == 'push' && 'true' || inputs.with_smb2 }}
+      FFMPEG_TAG: ${{ github.event_name == 'push' && 'n9.0.1-smb2' || inputs.ffmpeg_version }}
 
     steps:
       - name: Checkout this repo
@@ -39,16 +54,41 @@ jobs:
           xcodebuild -version
           nix --version
           sw_vers
+          echo "WITH_SMB2=${WITH_SMB2}  FFMPEG_TAG=${FFMPEG_TAG}"
 
-      - name: Build FFmpegKitNext (iOS arm64, GPL, x264/x265/dav1d/libaom, VideoToolbox)
+      - name: Wire in libsmb2 + forked FFmpeg (smb2 only)
+        if: env.WITH_SMB2 == 'true'
+        working-directory: ffmpeg-kit-next
+        run: |
+          set -euxo pipefail
+          # 1) 커스텀 라이브러리 빌드 스크립트 (오케스트레이터가 scripts/apple/<name>.sh 를 source 함)
+          cp ../scripts/apple/libsmb2.sh scripts/apple/libsmb2.sh
+          chmod +x scripts/apple/libsmb2.sh
+          # 2) ffmpeg 소스를 포크로 (libsmb2 패치가 들어간 태그). 태그 자체는 version_ffmpeg 로 넘긴다.
+          grep -n 'arthenica/FFmpeg"' scripts/source.sh
+          sed -i '' 's#https://github.com/arthenica/FFmpeg"#https://github.com/dju9401-png/FFmpeg"#' scripts/source.sh
+          grep -n 'dju9401-png/FFmpeg"' scripts/source.sh
+
+      - name: Build FFmpegKitNext (iOS arm64, GPL, x264/x265/dav1d/libaom, VideoToolbox[, libsmb2])
         working-directory: ffmpeg-kit-next
         env:
           # source.sh 가 version_<lib> 환경변수로 태그를 덮어쓴다
-          version_ffmpeg: ${{ github.event.inputs.ffmpeg_version || 'n9.0.1' }}
+          version_ffmpeg: ${{ env.FFMPEG_TAG }}
         run: |
           set -euxo pipefail
           chmod +x nix-ios.sh ios.sh scripts/*.sh || true
-          echo "FFmpeg 태그: ${version_ffmpeg}"
+          echo "FFmpeg 태그: ${version_ffmpeg}   smb2: ${WITH_SMB2}"
+
+          SMB2_FLAGS=""
+          if [ "${WITH_SMB2}" = "true" ]; then
+            SMB2_FLAGS="--enable-lib-custom-1-name=libsmb2 \
+              --enable-lib-custom-1-repo=https://github.com/sahlberg/libsmb2 \
+              --enable-lib-custom-1-repo-tag=v6.0.0 \
+              --enable-lib-custom-1-package-config-file-name=libsmb2 \
+              --enable-lib-custom-1-ffmpeg-enable-flag=libsmbclient \
+              --enable-lib-custom-1-license-file=LICENCE-LGPL-2.1.txt"
+          fi
+
           ./nix-ios.sh -p xcode26 \
             -x --spm --target=17.0 \
             --disable-arch-arm64e \
@@ -60,7 +100,17 @@ jobs:
             --enable-lib-x264 --enable-lib-x265 \
             --enable-lib-dav1d --enable-lib-libaom \
             --enable-lib-ios-videotoolbox --enable-lib-ios-audiotoolbox --enable-lib-ios-zlib \
+            ${SMB2_FLAGS} \
             --jobs=4
+
+      - name: Verify smb protocol compiled in (smb2 only)
+        if: env.WITH_SMB2 == 'true'
+        run: |
+          set -eux
+          f=$(find ffmpeg-kit-next/prebuilt -type f -path "*libavformat.xcframework*" -name libavformat | head -1)
+          echo "libavformat: $f"
+          # 프로토콜 이름 'smb' 와 libsmb2 심볼이 들어있어야 한다
+          strings "$f" | grep -c "smb2_init_context" && strings "$f" | grep -c "smb2_connect_share"
 
       - name: List outputs
         if: always()
@@ -72,7 +122,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpegkit-next-ios-arm64-${{ github.event.inputs.ffmpeg_version || 'n9.0.1' }}
+          name: ffmpegkit-next-ios-arm64-${{ env.FFMPEG_TAG }}${{ env.WITH_SMB2 == 'true' && '-smb2' || '' }}
           path: ffmpeg-kit-next/prebuilt/**
           retention-days: 30
           if-no-files-found: error
