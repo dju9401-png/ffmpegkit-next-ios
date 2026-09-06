@@ -47,8 +47,10 @@ make install || return 1
 #   ffmpeg configure 의 검사는 `#include <smb2/libsmb2.h>` 를 맨 먼저 하므로 컴파일이 깨진다.
 #   헤더 가드 바로 뒤에 표준 헤더 3개를 끼워 넣어 자급자족하게 만든다 (awk = GNU/BSD sed 차이 없음).
 HDR="${LIB_INSTALL_PREFIX}/include/smb2/libsmb2.h"
+#   또한 libsmb2.h 는 SMB2_GUID_SIZE·smb2_lease_key 등 smb2/smb2.h 의 정의도 쓰면서 그 헤더를 include
+#   하지 않는다(4차 빌드 실패). smb2.h 는 libsmb2.h 를 include 하지 않아 순환이 없으니 함께 끼운다.
 if ! grep -q '^#include <stdint.h>' "${HDR}"; then
-  awk '{print} /^#define _LIBSMB2_H_/ {print "#include <stdint.h>"; print "#include <stddef.h>"; print "#include <time.h>"}' \
+  awk '{print} /^#define _LIBSMB2_H_/ {print "#include <stdint.h>"; print "#include <stddef.h>"; print "#include <time.h>"; print "#include <smb2/smb2.h>"}' \
     "${HDR}" > "${HDR}.tmp" || return 1
   mv "${HDR}.tmp" "${HDR}" || return 1
 fi
