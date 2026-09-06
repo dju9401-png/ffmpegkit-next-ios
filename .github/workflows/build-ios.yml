@@ -1,0 +1,89 @@
+name: Build FFmpegKitNext for iOS (arm64 device only)
+
+# 수동 실행(workflow_dispatch) 또는 main 푸시 때 GitHub 의 macOS 러너(무료)에서
+# FFmpegKitNext 를 Nix 로 빌드해 xcframework + Swift Package 를 산출한다.
+# 결과물은 Actions 탭 → 해당 실행 → Artifacts 에서 zip 으로 내려받는다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpeg_version:
+        description: "FFmpeg 태그 (기본 n9.0.1 — 윈도우와 동일 버전. 말썽이면 n8.1.1)"
+        required: false
+        default: "n9.0.1"
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    # FFmpegKitNext 의 xcode26 프로필은 Xcode 26 이상을 요구한다 → macos-26 러너
+    runs-on: macos-26
+    timeout-minutes: 350          # GitHub 상한 360분. 전체 라이브러리 빌드가 1~3시간
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Checkout ffmpeg-kit-next
+        uses: actions/checkout@v4
+        with:
+          repository: arthenica/ffmpeg-kit-next
+          path: ffmpeg-kit-next
+
+      - name: Install Nix (flakes enabled)
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Toolchain info
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          nix --version
+          sw_vers
+
+      - name: Build FFmpegKitNext (iOS arm64, GPL, x264/x265/dav1d/libaom, VideoToolbox)
+        working-directory: ffmpeg-kit-next
+        env:
+          # source.sh 가 version_<lib> 환경변수로 태그를 덮어쓴다
+          version_ffmpeg: ${{ github.event.inputs.ffmpeg_version || 'n9.0.1' }}
+        run: |
+          set -euxo pipefail
+          chmod +x nix-ios.sh ios.sh scripts/*.sh || true
+          echo "FFmpeg 태그: ${version_ffmpeg}"
+          ./nix-ios.sh -p xcode26 \
+            -x --spm --target=17.0 \
+            --disable-arch-arm64e \
+            --disable-arch-arm64-simulator \
+            --disable-arch-x86-64 \
+            --disable-arch-arm64-mac-catalyst \
+            --disable-arch-x86-64-mac-catalyst \
+            --enable-gpl \
+            --enable-lib-x264 --enable-lib-x265 \
+            --enable-lib-dav1d --enable-lib-libaom \
+            --enable-lib-ios-videotoolbox --enable-lib-ios-audiotoolbox --enable-lib-ios-zlib \
+            --jobs=4
+
+      - name: List outputs
+        if: always()
+        run: |
+          ls -la ffmpeg-kit-next/prebuilt || true
+          find ffmpeg-kit-next/prebuilt -maxdepth 3 -name "*.xcframework" -o -maxdepth 3 -name "Package.swift" | head -50 || true
+
+      - name: Upload xcframeworks + Swift Package
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpegkit-next-ios-arm64-${{ github.event.inputs.ffmpeg_version || 'n9.0.1' }}
+          path: ffmpeg-kit-next/prebuilt/**
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload build log (항상 — 실패 원인 추적용)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            ffmpeg-kit-next/build.log
+            ffmpeg-kit-next/src/**/config.log
+          retention-days: 14
+          if-no-files-found: ignore
